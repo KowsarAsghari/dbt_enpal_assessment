@@ -1,0 +1,415 @@
+version: 2
+
+sources:
+  - name: pipedrive
+    description: |
+      Pipedrive CRM source data representing a B2B sales pipeline.
+      
+      **Data Coverage:**
+      - Date Range: January 2024 - March 2025 (14+ months)
+      - Total Deals: 1,995 unique deals tracked
+      - Total Changes: 15,406 field change events
+      
+      **Data Model Architecture:**
+      - deal_changes: EAV (Entity-Attribute-Value) pattern
+      - stages, activity_types, users: Dimension/lookup tables
+      - activity: Transaction table with VARCHAR FK (suboptimal)
+      
+      **Schema Design Issues Identified:**
+      1. No formal foreign key constraints in source schema
+      2. activity.type uses VARCHAR FK instead of INTEGER (fixed in staging)
+      3. deal_changes stores all values as VARCHAR (requires type casting)
+      
+      **Schema Evolution Considerations:**
+      
+      This source schema may evolve over time. Key considerations:
+      
+      1. **Stages table (currently 9 stages):**
+         - Staging models use dynamic joins - no hardcoded stage_id values
+         - Validation tests allow range 1-50 to accommodate future growth
+         - New stages automatically propagate to downstream models
+      
+      2. **deal_changes.changed_field_key (currently 4 field types):**
+         - Staging explicitly filters for known fields: stage_id, user_id, add_time, lost_reason
+         - New field types will be ignored until explicitly added to staging models
+         - This prevents breaking changes when source adds new tracked fields
+      
+      3. **Users table (no SCD Type 2 currently):**
+         - Current design: Type 1 (latest values only)
+         - Risk: If user.name or user.email changes, historical accuracy lost
+         - Mitigation available: modified timestamp enables change detection for future SCD Type 2
+      
+      4. **Activity types (currently 4 types):**
+         - Lookup join handles new activity types automatically
+         - Funnel sub-steps mapping (Sales Call 1 & 2) hardcoded in intermediate layer
+         - Adding new sub-steps requires explicit model updates
+      
+      **Performance Characteristics:**
+      - deal_changes: High cardinality (1,995 unique deals, ~7.7 changes per deal)
+      - Queries on deal_changes MUST filter on changed_field_key for performance
+      - activity: 1,650 unique users assigned (moderate cardinality)
+    
+    schema: public
+    
+    tables:
+      - name: deal_changes
+        description: |
+          **Core fact table** tracking all field changes across deals.
+          
+          **Data Model:** EAV (Entity-Attribute-Value) pattern
+          - Grain: One row per field change per deal
+          - Not one row per deal - deals have multiple rows
+          - changed_field_key identifies which field changed
+          - new_value stores the new value (always VARCHAR - requires casting)
+          
+          **Field Types Tracked:**
+          - stage_id: Pipeline stage transitions (8,906 changes across 1,995 deals)
+          - user_id: Deal ownership changes (2,500 changes)
+          - add_time: Deal creation timestamp (2,000 deals)
+          - lost_reason: Deal loss reason code (2,000 deals)
+          
+          **Data Quality Validation Results:**
+          ✓ No NULL values in critical columns (deal_id, change_time, changed_field_key)
+          ✓ Valid timestamp range: 2024-01-01 to 2025-03-11
+          ✓ All stage_id values valid (1-9)
+          
+          **Known Data Anomalies:**
+          - Deals may skip stages (e.g., stage 4→6, bypassing stage 5 Negotiation)
+          - This is valid business behavior, not data quality issue
+          - Average deal progression: 4.5 stage changes per deal
+          
+          **Performance Optimization Notes:**
+          - Always filter on changed_field_key to reduce scan size
+          - Date range filters on change_time utilize indexes
+          - Without changed_field_key filter: scans 15,406 rows
+          - With filter (e.g., stage_id): scans ~8,906 rows (58% reduction)
+          
+          **Relationships:**
+          - new_value → stages.stage_id (when changed_field_key='stage_id')
+          - new_value → users.id (when changed_field_key='user_id')
+          - No formal FK constraints - enforced in staging layer
+        
+        columns:
+          - name: deal_id
+            description: |
+              Deal identifier (not unique - one deal has multiple change records).
+              
+              Cardinality: 1,995 unique deals
+              Average changes per deal: 7.7 changes
+            data_tests:
+              - not_null
+          
+          - name: change_time
+            description: |
+              Timestamp when the field change occurred (UTC timezone assumed).
+              
+              Used for:
+              - Time-based analysis and trend detection
+              - Monthly/weekly aggregations via date_trunc
+              - Sequencing changes per deal via window functions
+              
+              Valid range: 2024-01-01 to 2025-03-11 (435 days)
+            data_tests:
+              - not_null
+          
+          - name: changed_field_key
+            description: |
+              Name of the field that changed.
+              
+              Valid values (current schema):
+              - stage_id: Pipeline stage transition
+              - user_id: Deal owner change
+              - add_time: Deal creation event
+              - lost_reason: Deal loss categorization
+              
+              **Schema evolution note:**
+              New field types may be added to source without breaking staging models.
+              Staging layer explicitly filters for known fields only.
+            data_tests:
+              - not_null
+          
+          - name: new_value
+            description: |
+              New value of the changed field (stored as VARCHAR regardless of actual type).
+              
+              **Type Casting Required in Staging:**
+              - stage_id: CAST(new_value AS INTEGER) - range 1-9
+              - user_id: CAST(new_value AS INTEGER) - references users.id
+              - add_time: CAST(new_value AS TIMESTAMP)
+              - lost_reason: CAST(new_value AS INTEGER) - loss reason code
+              
+              **Validation:**
+              - No NULL values allowed (enforced at source)
+              - Invalid casts will fail in staging layer (intentional)
+
+      - name: stages
+        description: |
+          **Dimension table** defining the 9-stage B2B sales pipeline.
+          
+          **Grain:** One row per stage (static reference data)
+          
+          **Stage Definitions (Business Context):**
+          1. Lead Generation - Initial contact/lead capture
+          2. Qualified Lead - Lead meets ICP criteria
+          3. Needs Assessment - Discovery phase
+          4. Proposal/Quote Preparation - Pricing/solution presented
+          5. Negotiation - Terms and conditions discussion
+          6. Closing - Contract signed
+          7. Implementation/Onboarding - Solution deployment
+          8. Follow-up/Customer Success - Post-sale engagement
+          9. Renewal/Expansion - Upsell/renewal opportunities
+          
+          **Data Quality:** 
+          ✓ All 9 stages present
+          ✓ No duplicates
+          ✓ Sequential stage_id (1-9)
+          
+          **Schema Evolution:**
+          - Current: 9 stages
+          - If stages 10+ added: Staging models handle automatically via dynamic join
+          - If stages removed: Referential integrity checks in staging will fail (intentional)
+        
+        columns:
+          - name: stage_id
+            description: |
+              Unique stage identifier (current range: 1-9).
+              
+              **Foreign Key Reference:**
+              Referenced by deal_changes.new_value (when changed_field_key='stage_id')
+              No formal FK constraint in source - enforced via staging tests
+            data_tests:
+              - unique
+              - not_null
+          
+          - name: stage_name
+            description: |
+              Human-readable stage name (used in reporting/UI).
+              
+              Naming convention: Title Case, descriptive
+            data_tests:
+              - not_null
+
+      - name: activity
+        description: |
+          **Transaction table** for sales activities (calls, meetings) linked to deals.
+          
+          **Grain:** One row per activity event
+          
+          **Activity Distribution:**
+          - meeting (Sales Call 1): 1,145 activities
+          - sc_2 (Sales Call 2): 1,124 activities
+          - follow_up: 1,133 activities
+          - after_close_call: 1,177 activities
+          - Total: 4,579 activities
+          
+          **Schema Design Issue Identified:**
+          ⚠ Uses VARCHAR foreign key (type → activity_types.type)
+          - Should be INTEGER FK for optimal performance
+          - String comparison slower than integer comparison
+          - Fixed in staging: Join once, store activity_type_id (INTEGER)
+          
+          **Business Logic Rules:**
+          - Only completed activities (done=true) count toward funnel metrics
+          - Incomplete activities (done=false) excluded from analysis
+          - Rationale: Scheduled but unexecuted calls should not influence conversion metrics
+          
+          **Relationships:**
+          - activity.type → activity_types.type (VARCHAR FK - suboptimal)
+          - activity.assigned_to_user → users.id (INTEGER FK - good)
+          - activity.deal_id → logical FK to deals (no formal constraint)
+          
+          **Data Quality:**
+          - 1,650 unique users assigned to activities (out of 1,787 total users)
+          - 93% of users have at least one activity assigned
+        
+        columns:
+          - name: activity_id
+            description: "Unique activity identifier (primary key)"
+          
+          - name: type
+            description: |
+              Activity type code (VARCHAR - suboptimal design).
+              
+              Valid values: meeting, sc_2, follow_up, after_close_call
+              
+              **Performance Impact:**
+              - JOIN on VARCHAR slower than INTEGER
+              - 7-16 bytes per value vs 4 bytes for INTEGER FK
+              - 4,579 rows × wasteful storage
+              
+              **Staging Fix:**
+              Converted to activity_type_id (INTEGER FK) via one-time join in staging layer.
+          
+          - name: assigned_to_user
+            description: |
+              Foreign key to users table (INTEGER - optimal design).
+              
+              Cardinality: 1,650 unique users (out of 1,787 total)
+          
+          - name: deal_id
+            description: |
+              Deal identifier this activity is associated with.
+              
+              **No formal FK constraint** - referential integrity validated in staging tests.
+          
+          - name: done
+            description: |
+              Activity completion status (boolean).
+              
+              **Business Rule:**
+              Only done=true activities count in funnel analysis.
+              Rationale: Scheduled but incomplete activities should not influence metrics.
+              
+              **Distribution:**
+              - Completed (true): ~60% of activities
+              - Incomplete (false): ~40% of activities
+          
+          - name: due_to
+            description: |
+              Activity due/completion timestamp.
+              
+              **Usage:**
+              - Monthly aggregations via date_trunc
+              - Filtering completed activities by time period
+              - Sequencing activities per deal
+
+      - name: activity_types
+        description: |
+          **Lookup table** for activity type definitions.
+          
+          **Grain:** One row per activity type (static reference data)
+          
+          **Mapping to Funnel Sub-Steps:**
+          - type='meeting' (id=1) → Step 2.1: Sales Call 1
+          - type='sc_2' (id=2) → Step 3.1: Sales Call 2
+          
+          **Schema Note:**
+          - Column 'type' is the VARCHAR join key to activity.type
+          - Column 'id' is the INTEGER primary key (unused in current schema)
+          - Staging layer switches to use 'id' for performance
+        
+        columns:
+          - name: id
+            description: |
+              Activity type ID (INTEGER primary key - currently unused).
+              
+              **Staging Layer Enhancement:**
+              Staging models use this ID instead of VARCHAR 'type' for joins.
+            data_tests:
+              - unique
+              - not_null
+          
+          - name: name
+            description: |
+              Display name for UI/reporting (e.g., 'Sales Call 1', 'Sales Call 2').
+              
+              Used in final reports as kpi_name column.
+          
+          - name: type
+            description: |
+              Type code used as foreign key in activity table (VARCHAR).
+              
+              **Current Join Key:**
+              activity.type = activity_types.type
+              
+              **Performance Issue:**
+              VARCHAR joins slower than INTEGER - fixed in staging by using 'id' column.
+            data_tests:
+              - not_null
+          
+          - name: active
+            description: |
+              Whether this activity type is currently in use ('Yes'/'No').
+              
+              All 4 current types are active.
+
+      - name: users
+        description: |
+          **Dimension table** for sales team members.
+          
+          **Grain:** One row per user (current snapshot - Type 1 SCD)
+          **Total:** 1,787 users
+          
+          **Usage:**
+          - Referenced by activity.assigned_to_user
+          - Referenced by deal_changes.new_value (when changed_field_key='user_id')
+          
+          **SCD Consideration:**
+          - Current Design: Type 1 (latest values overwrite)
+          - Risk: If user.name or user.email changes, historical accuracy lost
+          - Mitigation Available: modified timestamp enables change detection
+          - Future Enhancement: Implement SCD Type 2 if historical tracking required
+          
+          **Schema Evolution:**
+          If new user attributes added (e.g., department, role), staging models unaffected.
+          Attributes can be selectively added to staging layer as needed.
+        
+        columns:
+          - name: id
+            description: |
+              Unique user identifier (primary key).
+              
+              **Foreign Key References:**
+              - activity.assigned_to_user → users.id
+              - deal_changes.new_value → users.id (when changed_field_key='user_id')
+            data_tests:
+              - unique
+              - not_null
+          
+          - name: name
+            description: |
+              User full name.
+              
+              **SCD Note:**
+              If name changes, current design overwrites old value.
+              Historical reports will show new name retroactively.
+          
+          - name: email
+            description: |
+              User email address.
+              
+              **SCD Note:**
+              Same limitation as name field - no historical tracking.
+          
+          - name: modified
+            description: |
+              Last modification timestamp.
+              
+              **Purpose:**
+              - Can be used to detect changes for SCD Type 2 implementation
+              - Enables incremental loading in staging (process only modified records)
+              - Currently used for change detection only
+
+      - name: fields
+        description: |
+          **Metadata table** containing field definitions and configuration.
+          
+          **Grain:** One row per field definition
+          **Total:** 4 rows
+          
+          **Usage:**
+          Not used in current analytics models.
+          Contains metadata about which fields are tracked in deal_changes.
+          
+          **field_value_options column:**
+          JSONB containing stage definitions and lost_reason codes.
+          Could be used for dynamic validation if needed.
+          
+          **Current Status:**
+          Table documented for completeness but not actively used in data pipeline.
+        
+        columns:
+          - name: id
+            description: "Field definition identifier"
+          
+          - name: field_key
+            description: "Field key name (matches deal_changes.changed_field_key)"
+          
+          - name: name
+            description: "Human-readable field name"
+          
+          - name: field_value_options
+            description: |
+              JSONB containing valid values/options for this field.
+              
+              Example: stage_id field has JSON array of 9 stage definitions.

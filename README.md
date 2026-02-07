@@ -1,34 +1,104 @@
-## Setup
+# Enpal Analytics Engineering Assessment
 
-1. Download Docker Desktop (if you don’t have installed) using the official website, install and launch.
-2. Fork this Github project to you Github account. Clone the forked repo to your device.
-3. Open your Command Prompt or Terminal, navigate to that folder, and run the command `docker compose up`.
-4. Now you have launched a local Postgres database with the following credentials:
- ```
-    Host: localhost
-    User: admin
-    Password: admin
-    Port: 5432 
+## Project Overview
+Building a scalable sales funnel analytics layer for Pipedrive CRM data.
+
+## Data Architecture
+
+### Source Schema
+- `deal_changes`: EAV model tracking all field changes (15,406 rows)
+- `stages`: 9-stage sales pipeline definitions
+- `activity`: Sales activities linked to deals (4,579 rows)
+- `activity_types`: Activity categorization (Sales Call 1, Sales Call 2, etc.)
+
+### dbt Model Layers
+
+#### Staging Layer (`models/staging/`)
+Light transformations - renaming, type casting, basic cleaning.
+- `stg_pipedrive__deal_changes.sql` - Clean deal_changes
+- `stg_pipedrive__stages.sql` - Clean stages lookup
+- `stg_pipedrive__activities.sql` - Clean activity data
+- `stg_pipedrive__activity_types.sql` - Clean activity types
+
+#### Intermediate Layer (`models/intermediate/`)
+Business logic - reusable transformations serving multiple downstream reports.
+- `int_deals__stage_changes.sql` - Join deal_changes with stage names
+- `int_deals__sales_calls.sql` - Identify Sales Call 1 & 2 events
+- `int_deals__funnel_events.sql` - UNION all funnel entry points
+
+#### Marts Layer (`models/marts/`)
+Business-facing models - final aggregations.
+- `rep_sales_funnel_monthly.sql` - Monthly funnel step counts
+
+## Design Decisions
+
+### Why This Architecture?
+1. **Staging:** Keeps source logic separate - if Pipedrive schema changes, only staging models need updating
+2. **Intermediate:** Reusable components - `int_deals__stage_changes` can serve future reports beyond just the monthly funnel
+3. **Marts:** Business-specific aggregations - keeps reporting logic isolated
+
+### Key Assumptions
+- Deals entering multiple stages in the same month are counted once per stage
+- Sales Call 1 = activities with `type = 'meeting'`
+- Sales Call 2 = activities with `type = 'sc_2'`
+- Month is based on `change_time` for stage changes, `due_to` for activities
+- Only completed activities (`done = true`) count toward funnel sub-steps
+
+## Running the Project
+
+### Prerequisites
+- Docker Desktop running
+- Python 3.8+ with dbt-core and dbt-postgres installed
+- PostgreSQL database running in Docker
+
+### Setup Steps
+
+1. **Start the database:**
+```bash
+   docker compose up
 ```
-5. Connect to the db via a preferred tool (e.g. DataGrip, Dbeaver etc)
-6. Install dbt-core and dbt-postgres using pip (if you don’t have) on your preferred environment.
-7. Now you can run `dbt run` with the test model and check public_pipedrive_analytics schema to see the dbt result (with one test model)
+   Wait for "database system is ready to accept connections"
 
-## Project
-1. Remove the test model once you make sure it works
-2. Dive deep into the Pipedrive CRM source data to gain a thorough understanding of all its details. (You may also research the Pipedrive CRM tool terms).
-3. Define DBT sources and build the necessary layers organizing the data flow for optimal relevance and maintainability.
-4. Build a reporting model (rep_sales_funnel_monthly) with monthly intervals, incorporating the following funnel steps (KPIs):  
-  &nbsp;&nbsp;&nbsp;Step 1: Lead Generation  
-  &nbsp;&nbsp;&nbsp;Step 2: Qualified Lead  
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Step 2.1: Sales Call 1  
-  &nbsp;&nbsp;&nbsp;Step 3: Needs Assessment  
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Step 3.1: Sales Call 2  
-  &nbsp;&nbsp;&nbsp;Step 4: Proposal/Quote Preparation  
-  &nbsp;&nbsp;&nbsp;Step 5: Negotiation  
-  &nbsp;&nbsp;&nbsp;Step 6: Closing  
-  &nbsp;&nbsp;&nbsp;Step 7: Implementation/Onboarding  
-  &nbsp;&nbsp;&nbsp;Step 8: Follow-up/Customer Success  
-  &nbsp;&nbsp;&nbsp;Step 9: Renewal/Expansion
-5. Column names of the reporting model: `month`, `kpi_name`, `funnel_step`, `deals_count`
-6. “Git commit” all the changes and create a PR to your forked repo (not the original one). Send your repo link to us.
+2. **Load data into PostgreSQL:**
+```bash
+   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY activity_types FROM '/raw_data/activity_types.csv' WITH (FORMAT csv, HEADER true);"
+   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY stages FROM '/raw_data/stages.csv' WITH (FORMAT csv, HEADER true);"
+   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY fields FROM '/raw_data/fields.csv' WITH (FORMAT csv, HEADER true);"
+   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY users FROM '/raw_data/users.csv' WITH (FORMAT csv, HEADER true);"
+   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY activity FROM '/raw_data/activity.csv' WITH (FORMAT csv, HEADER true);"
+   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY deal_changes FROM '/raw_data/deal_changes.csv' WITH (FORMAT csv, HEADER true);"
+```
+
+3. **Test database connection:**
+```bash
+   dbt debug
+```
+   Should show "All checks passed!"
+
+4. **Run the transformation pipeline:**
+```bash
+   dbt run
+```
+   Builds all 8 models in correct dependency order
+
+5. **Run data quality tests:**
+```bash
+   dbt test
+```
+   Validates data integrity with 7 tests
+
+6. **View the final report:**
+```sql
+   SELECT * FROM public_pipedrive_analytics.rep_sales_funnel_monthly 
+   ORDER BY month, funnel_step;
+```
+
+### Project Structure
+- **Staging:** 4 models cleaning raw data
+- **Intermediate:** 3 models with business logic
+- **Marts:** 1 final report model
+
+### Results
+- **Total rows in final report:** 128 (14 months × ~9 steps)
+- **Date range:** January 2024 - February 2025
+- **Build time:** ~2 seconds for full refresh
