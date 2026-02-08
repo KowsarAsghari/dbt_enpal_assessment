@@ -34,11 +34,12 @@ models:
           - not_null
       
       - name: stage_id
-        description: "Pipeline stage identifier (1-9)"
+        description: "Pipeline stage identifier"
         data_tests:
           - not_null
-          - accepted_values:
-              values: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+          - relationships:
+              to: ref('stg_pipedrive__stages')
+              field: stage_id
       
       - name: stage_change_timestamp
         description: "Exact timestamp of stage change"
@@ -71,7 +72,51 @@ models:
           - not_null
       
       - name: _loaded_at
-        description: "Load timestamp (for debugging)"
+        description: "Load timestamp"
       
       - name: _dbt_run_id
-        description: "dbt run identifier (for audit trail)"
+        description: "dbt run identifier"
+
+  - name: stg_pipedrive__stages
+    description: |
+      Staging model for sales pipeline stage definitions.
+      
+      Clean dimension table for stage lookup.
+      Adds stage_order and stage_category for analysis.
+      
+      Grain: One row per pipeline stage
+      Rows: 9 (static reference data)
+    
+    config:
+      tags: ['staging', 'dimension', 'static']
+    
+    columns:
+      - name: stage_id
+        description: "Unique stage identifier"
+        data_tests:
+          - unique
+          - not_null
+      
+      - name: stage_name
+        description: "Human-readable stage name"
+        data_tests:
+          - not_null
+          - unique
+      
+      - name: stage_order
+        description: "Sorting order (same as stage_id)"
+        data_tests:
+          - not_null
+      
+      - name: stage_category
+        description: "Stage grouping: Early/Mid/Late Stage"
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['Early Stage', 'Mid Stage', 'Late Stage']
+      
+      - name: _loaded_at
+        description: "Load timestamp"
+      
+      - name: _dbt_run_id
+        description: "dbt run identifier"
