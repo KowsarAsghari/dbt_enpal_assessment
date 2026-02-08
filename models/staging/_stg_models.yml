@@ -4,119 +4,128 @@ models:
   - name: stg_pipedrive__deal_changes
     description: |
       Staging model for deal stage change events.
-      
-      Filters deal_changes table for stage transitions only.
-      Transforms VARCHAR to proper types and adds date fields.
-      
+      Filters for stage transitions and adds date fields.
       Grain: One row per stage change per deal
-      Rows: 8,906 (from 15,406 total - 58% reduction)
-    
+      Rows: 8,906
     config:
       tags: ['staging', 'daily']
-    
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns:
             - deal_id
             - stage_change_timestamp
             - stage_id
-    
     columns:
       - name: change_id
-        description: "Surrogate key generated from natural key composite"
+        description: "Surrogate key"
         data_tests:
           - unique
           - not_null
-      
       - name: deal_id
         description: "Deal identifier"
         data_tests:
           - not_null
-      
       - name: stage_id
-        description: "Pipeline stage identifier"
+        description: "Pipeline stage (1-9, expandable)"
         data_tests:
           - not_null
           - relationships:
               to: ref('stg_pipedrive__stages')
               field: stage_id
-      
       - name: stage_change_timestamp
-        description: "Exact timestamp of stage change"
         data_tests:
           - not_null
-      
       - name: stage_change_date
-        description: "Date of stage change"
         data_tests:
           - not_null
-      
       - name: stage_change_month
-        description: "First day of month (for monthly aggregations)"
         data_tests:
           - not_null
-      
       - name: stage_change_week
-        description: "First day of week (for weekly trends)"
         data_tests:
           - not_null
-      
       - name: stage_change_quarter
-        description: "First day of quarter"
         data_tests:
           - not_null
-      
       - name: stage_change_year
-        description: "Year (integer)"
         data_tests:
           - not_null
-      
-      - name: _loaded_at
-        description: "Load timestamp"
-      
-      - name: _dbt_run_id
-        description: "dbt run identifier"
 
   - name: stg_pipedrive__stages
     description: |
-      Staging model for sales pipeline stage definitions.
-      
-      Clean dimension table for stage lookup.
-      Adds stage_order and stage_category for analysis.
-      
-      Grain: One row per pipeline stage
-      Rows: 9 (static reference data)
-    
+      Staging model for pipeline stage definitions.
+      Adds stage_category and stage_order.
+      Grain: One row per stage
+      Rows: 9
     config:
       tags: ['staging', 'dimension', 'static']
-    
     columns:
       - name: stage_id
         description: "Unique stage identifier"
         data_tests:
           - unique
           - not_null
-      
       - name: stage_name
-        description: "Human-readable stage name"
         data_tests:
           - not_null
           - unique
-      
       - name: stage_order
-        description: "Sorting order (same as stage_id)"
         data_tests:
           - not_null
-      
       - name: stage_category
-        description: "Stage grouping: Early/Mid/Late Stage"
         data_tests:
           - not_null
           - accepted_values:
               values: ['Early Stage', 'Mid Stage', 'Late Stage']
-      
-      - name: _loaded_at
-        description: "Load timestamp"
-      
-      - name: _dbt_run_id
-        description: "dbt run identifier"
+
+  - name: stg_pipedrive__activity
+    description: |
+      ...
+    config:
+      tags: ['staging', 'daily']
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - activity_id
+            - deal_id
+    columns:
+      - name: activity_id
+        description: "Activity identifier (NOT unique - same ID can link to multiple deals)"
+        data_tests:
+          - not_null
+      - name: deal_id
+        description: "Related deal"
+      - name: user_id
+        description: "Assigned user"
+        data_tests:
+          - not_null
+      - name: activity_type_id
+        description: "Activity type (INTEGER FK)"
+        data_tests:
+          - not_null
+      - name: activity_type_code
+        description: "Type code (VARCHAR reference)"
+      - name: activity_type_name
+        description: "Display name"
+      - name: is_completed
+        description: "Completion status"
+        data_tests:
+          - not_null
+      - name: activity_timestamp
+        data_tests:
+          - not_null
+      - name: activity_date
+        data_tests:
+          - not_null
+      - name: activity_month
+        data_tests:
+          - not_null
+      - name: activity_week
+        data_tests:
+          - not_null
+      - name: activity_quarter
+        data_tests:
+          - not_null
+      - name: activity_year
+        data_tests:
+          - not_null
