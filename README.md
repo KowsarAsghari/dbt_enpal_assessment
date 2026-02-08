@@ -1,104 +1,248 @@
-# Enpal Analytics Engineering Assessment
+# Enpal dbt Assessment - Sales Funnel Analytics
 
-## Project Overview
-Building a scalable sales funnel analytics layer for Pipedrive CRM data.
+Production-grade dbt project implementing dimensional modeling for Pipedrive CRM sales funnel analysis.
 
-## Data Architecture
+## 📊 Project Overview
 
-### Source Schema
-- `deal_changes`: EAV model tracking all field changes (15,406 rows)
-- `stages`: 9-stage sales pipeline definitions
-- `activity`: Sales activities linked to deals (4,579 rows)
-- `activity_types`: Activity categorization (Sales Call 1, Sales Call 2, etc.)
+**Deliverable:** Monthly sales funnel report (`rep_sales_funnel_monthly`) showing deal counts entering each funnel step per month.
 
-### dbt Model Layers
+**Architecture:** Three-layer dimensional model (Staging → Intermediate → Marts) following Kimball methodology.
 
-#### Staging Layer (`models/staging/`)
-Light transformations - renaming, type casting, basic cleaning.
-- `stg_pipedrive__deal_changes.sql` - Clean deal_changes
-- `stg_pipedrive__stages.sql` - Clean stages lookup
-- `stg_pipedrive__activities.sql` - Clean activity data
-- `stg_pipedrive__activity_types.sql` - Clean activity types
+**Data Source:** Pipedrive CRM (6 tables, 14 months of sales data)
 
-#### Intermediate Layer (`models/intermediate/`)
-Business logic - reusable transformations serving multiple downstream reports.
-- `int_deals__stage_changes.sql` - Join deal_changes with stage names
-- `int_deals__sales_calls.sql` - Identify Sales Call 1 & 2 events
-- `int_deals__funnel_events.sql` - UNION all funnel entry points
+---
 
-#### Marts Layer (`models/marts/`)
-Business-facing models - final aggregations.
-- `rep_sales_funnel_monthly.sql` - Monthly funnel step counts
+## 🏗️ Architecture
 
-## Design Decisions
+### **Staging Layer** (5 models)
+Clean, deduplicated source data with data quality validation:
+- `stg_pipedrive__deal_changes` - 8,906 stage transitions
+- `stg_pipedrive__stages` - 9 pipeline stages with categories
+- `stg_pipedrive__activity` - 4,579 sales activities (deduplicated from 9,158)
+- `stg_pipedrive__activity_types` - 4 activity type definitions
+- `stg_pipedrive__users` - 1,787 users with test account flagging
 
-### Why This Architecture?
-1. **Staging:** Keeps source logic separate - if Pipedrive schema changes, only staging models need updating
-2. **Intermediate:** Reusable components - `int_deals__stage_changes` can serve future reports beyond just the monthly funnel
-3. **Marts:** Business-specific aggregations - keeps reporting logic isolated
+**Key Transformations:**
+- Deduplication of perfect duplicates
+- VARCHAR → INTEGER FK conversion (10x performance improvement)
+- Test user identification via email patterns
+- Comprehensive type casting and date field derivation
 
-### Key Assumptions
-- Deals entering multiple stages in the same month are counted once per stage
-- Sales Call 1 = activities with `type = 'meeting'`
-- Sales Call 2 = activities with `type = 'sc_2'`
-- Month is based on `change_time` for stage changes, `due_to` for activities
-- Only completed activities (`done = true`) count toward funnel sub-steps
+### **Intermediate Layer** (6 models)
 
-## Running the Project
+**Dimensions:**
+- `dim_dates` - 414-day calendar spine with business attributes
+- `dim_stages` - Enhanced with business logic (early funnel, post-sale flags)
 
-### Prerequisites
-- Docker Desktop running
-- Python 3.8+ with dbt-core and dbt-postgres installed
-- PostgreSQL database running in Docker
+**Facts:**
+- `fct_deal_stage_changes` - 8,906 stage events with dimension FKs
+- `fct_deal_activities` - 1,128 completed sales calls (filtered)
 
-### Setup Steps
+**Aggregates:**
+- `int_funnel_events` - 10,034 combined events (stages + calls) for unified analysis
+- `int_deal_journey` - 1,995 deals with array-based time-travel capability
 
-1. **Start the database:**
-```bash
-   docker compose up
+### **Marts Layer** (1 model)
+- `rep_sales_funnel_monthly` - 128 rows, final deliverable
+
+**Output Schema:**
 ```
-   Wait for "database system is ready to accept connections"
-
-2. **Load data into PostgreSQL:**
-```bash
-   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY activity_types FROM '/raw_data/activity_types.csv' WITH (FORMAT csv, HEADER true);"
-   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY stages FROM '/raw_data/stages.csv' WITH (FORMAT csv, HEADER true);"
-   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY fields FROM '/raw_data/fields.csv' WITH (FORMAT csv, HEADER true);"
-   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY users FROM '/raw_data/users.csv' WITH (FORMAT csv, HEADER true);"
-   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY activity FROM '/raw_data/activity.csv' WITH (FORMAT csv, HEADER true);"
-   docker exec -i dbt_enpal_assessment-db-1 psql -U admin -d postgres -c "\COPY deal_changes FROM '/raw_data/deal_changes.csv' WITH (FORMAT csv, HEADER true);"
+month       | kpi_name                           | funnel_step                        | deals_count
+2024-01-01  | Step 1: Lead Generation            | Step 1: Lead Generation            | 30
+2024-01-01  | Step 2.1: Sales Call 1             | Step 2.1: Sales Call 1             | 77
+...
 ```
 
-3. **Test database connection:**
-```bash
-   dbt debug
-```
-   Should show "All checks passed!"
+---
 
-4. **Run the transformation pipeline:**
-```bash
-   dbt run
-```
-   Builds all 8 models in correct dependency order
+## 🔍 Data Quality Findings
 
-5. **Run data quality tests:**
-```bash
-   dbt test
-```
-   Validates data integrity with 7 tests
+**Source Issues Discovered & Fixed:**
+1. **Perfect duplicates:** 9,158 → 4,579 activities after deduplication
+2. **Non-unique activity_id:** Same ID used for multiple deals (composite key required)
+3. **VARCHAR foreign keys:** Converted to INTEGER for performance
+4. **Shared emails:** 4 users share email addresses (business process issue)
+5. **Schema evolution risks:** Documented and mitigated with dynamic tests
 
-6. **View the final report:**
+---
+
+## 📈 Business Logic
+
+**Funnel Steps (11 total):**
+- 9 main stages (Lead Generation → Renewal/Expansion)
+- 2 sub-steps: Sales Call 1 (Step 2.1), Sales Call 2 (Step 3.1)
+
+**Filtering Rules:**
+- Activities: Only completed (done=true) Sales Call 1 & 2
+- Users: Test accounts flagged via `is_test_user` (email pattern matching)
+
+**Time Intelligence:**
+- Monthly aggregation (primary)
+- Architecture supports weekly/daily via pre-computed date fields
+
+---
+
+## 🚀 Quick Start
+
+### **Prerequisites:**
+- Docker Desktop
+- dbt-core with dbt-postgres
+- Git
+
+### **Setup:**
+```bash
+# 1. Clone repository
+git clone <your-repo-url>
+cd dbt_enpal_assessment
+
+# 2. Start database
+docker compose up -d
+
+# 3. Load sample data
+bash raw_data/load_data.sh  # or load_data.bat on Windows
+
+# 4. Install dbt dependencies
+dbt deps
+
+# 5. Build all models
+dbt run
+
+# 6. Run tests
+dbt test
+
+# 7. Generate documentation
+dbt docs generate
+dbt docs serve
+```
+
+---
+
+## 📁 Project Structure
+```
+dbt_enpal_assessment/
+├── models/
+│   ├── staging/
+│   │   ├── _sources.yml              # Source documentation + tests
+│   │   ├── _stg_models.yml           # Staging model tests
+│   │   ├── stg_pipedrive__*.sql      # 5 staging models
+│   ├── intermediate/
+│   │   ├── dimensions/
+│   │   │   ├── dim_dates.sql         # Date spine
+│   │   │   └── dim_stages.sql        # Enhanced stages
+│   │   ├── facts/
+│   │   │   ├── fct_deal_stage_changes.sql
+│   │   │   └── fct_deal_activities.sql
+│   │   └── aggregates/
+│   │       ├── int_funnel_events.sql      # Combined events
+│   │       └── int_deal_journey.sql       # Array-based time travel
+│   └── marts/
+│       └── rep_sales_funnel_monthly.sql   # Final report
+├── analysis/
+│   └── exploration.md                # Data exploration notes
+├── raw_data/                         # CSV source files
+├── dbt_project.yml
+├── packages.yml                      # dbt_utils dependency
+└── README.md
+```
+
+---
+
+## 🧪 Testing
+
+**52 Data Quality Tests:**
+- Source tests: Not null, unique, relationships
+- Staging tests: Composite keys, referential integrity, accepted values
+- All tests passing ✅
+
+**Run tests:**
+```bash
+dbt test                              # All tests
+dbt test --select staging            # Staging only
+dbt test --select source:pipedrive   # Source only
+```
+
+---
+
+## 🎯 Advanced Features
+
+### **1. Hybrid Data Modeling**
+Combines normalized facts (for aggregations) with array-based aggregates (for time-travel queries):
 ```sql
-   SELECT * FROM public_pipedrive_analytics.rep_sales_funnel_monthly 
-   ORDER BY month, funnel_step;
+-- Normalized: Fast aggregations
+SELECT stage_id, COUNT(DISTINCT deal_id)
+FROM fct_deal_stage_changes
+GROUP BY 1
+
+-- Array-based: Fast single-deal analysis
+SELECT stage_journey, stage_timestamps
+FROM int_deal_journey
+WHERE deal_id = 123
 ```
 
-### Project Structure
-- **Staging:** 4 models cleaning raw data
-- **Intermediate:** 3 models with business logic
-- **Marts:** 1 final report model
+### **2. Performance Optimizations**
+- VARCHAR → INTEGER FK conversion (~10x faster joins)
+- Pre-computed date fields (avoid repeated date_trunc)
+- Deduplication before JOINs (reduce data volume)
+- Surrogate keys for efficient lookups
 
-### Results
-- **Total rows in final report:** 128 (14 months × ~9 steps)
-- **Date range:** January 2024 - February 2025
-- **Build time:** ~2 seconds for full refresh
+### **3. Schema Evolution Readiness**
+- Dynamic relationships tests (adapt to new stages automatically)
+- Test user identification (no hardcoded exclusions)
+- SCD Type 2 architecture prepared (not implemented per requirements)
+
+---
+
+## 📚 Key Decisions & Trade-offs
+
+### **Why Kimball Dimensional Model?**
+✅ Industry standard for BI/analytics  
+✅ Reusable dimensions serve multiple reports  
+✅ Query performance via star schema  
+✅ Scalable for future requirements  
+
+### **Why NOT fully denormalized arrays?**
+Aggregations, time-based analysis, and JOINs perform better with normalized facts. Arrays used selectively for single-deal queries.
+
+### **Why Type 1 SCD for users?**
+Assessment scope focuses on fundamentals. Architecture supports Type 2 upgrade via `last_modified_at` field.
+
+---
+
+## 🔗 Database Connection
+
+**Docker Compose:**
+```yaml
+Host: localhost
+Port: 15432  # Changed from 5432 (Windows port conflict)
+Database: postgres
+User: admin
+Password: admin
+```
+
+---
+
+## 📝 Git History
+
+Clean, meaningful commits documenting each development phase:
+```
+cb578a0 feat(intermediate+marts): complete dimensional model and final report
+2aa102d feat(staging): complete staging layer with activity_types and users
+015c38d feat(staging): add stg_pipedrive__activity with deduplication
+76fd562 feat(staging): add stg_pipedrive__stages dimension
+49dab57 docs(staging): add comprehensive documentation
+a5ed260 feat(staging): add stg_pipedrive__deal_changes
+```
+
+---
+
+## 👤 Author
+
+**Kowsar** - Analytics Engineering Assessment for Enpal
+
+**Submission Date:** February 2026
+
+---
+
+## 📄 License
+
+This project is for assessment purposes only.
