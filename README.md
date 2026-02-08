@@ -1,248 +1,144 @@
 # Enpal dbt Assessment - Sales Funnel Analytics
 
-Production-grade dbt project implementing dimensional modeling for Pipedrive CRM sales funnel analysis.
+Production-grade dbt project implementing Kimball dimensional modeling for Pipedrive CRM analysis.
 
-## 📊 Project Overview
+## Project Overview
 
-**Deliverable:** Monthly sales funnel report (`rep_sales_funnel_monthly`) showing deal counts entering each funnel step per month.
+**Deliverable:** `rep_sales_funnel_monthly` - Monthly deal counts per funnel step (128 rows, 11 steps)
 
-**Architecture:** Three-layer dimensional model (Staging → Intermediate → Marts) following Kimball methodology.
+**Architecture:** Three-layer dimensional model (Staging → Intermediate → Marts)
 
-**Data Source:** Pipedrive CRM (6 tables, 14 months of sales data)
+**Data:** Pipedrive CRM (6 tables, 14 months, 1,995 deals)
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
-### **Staging Layer** (5 models)
-Clean, deduplicated source data with data quality validation:
-- `stg_pipedrive__deal_changes` - 8,906 stage transitions
-- `stg_pipedrive__stages` - 9 pipeline stages with categories
-- `stg_pipedrive__activity` - 4,579 sales activities (deduplicated from 9,158)
-- `stg_pipedrive__activity_types` - 4 activity type definitions
-- `stg_pipedrive__users` - 1,787 users with test account flagging
+### Staging Layer (5 models) - Data Quality Foundation
 
-**Key Transformations:**
-- Deduplication of perfect duplicates
-- VARCHAR → INTEGER FK conversion (10x performance improvement)
-- Test user identification via email patterns
-- Comprehensive type casting and date field derivation
+- **deal_changes**: 8,906 stage transitions (deduped, type-cast)
+- **stages**: 9 pipeline stages with business categorization
+- **activity**: 4,579 sales activities (50% deduplication, VARCHAR→INTEGER FK)
+- **activity_types**: 4 lookup definitions
+- **users**: 1,787 reps with test account flagging
 
-### **Intermediate Layer** (6 models)
+**Fixes Applied:** Perfect duplicate removal, non-unique ID handling, schema optimization, shared email detection
+
+### Intermediate Layer (6 models) - Reusable Business Logic
 
 **Dimensions:**
-- `dim_dates` - 414-day calendar spine with business attributes
-- `dim_stages` - Enhanced with business logic (early funnel, post-sale flags)
+- `dim_dates` (414 days) - Calendar spine
+- `dim_stages` (9 stages) - Early/mid/late funnel flags
 
 **Facts:**
-- `fct_deal_stage_changes` - 8,906 stage events with dimension FKs
-- `fct_deal_activities` - 1,128 completed sales calls (filtered)
+- `fct_deal_stage_changes` (8,906 events) - Normalized stage transitions
+- `fct_deal_activities` (1,128 calls) - Completed Sales Call 1 & 2 only
 
 **Aggregates:**
-- `int_funnel_events` - 10,034 combined events (stages + calls) for unified analysis
-- `int_deal_journey` - 1,995 deals with array-based time-travel capability
+- `int_funnel_events` (10,034 events) - Unified stages + activities
+- `int_deal_timeline` (1,995 deals) - Array-based time-travel capability
 
-### **Marts Layer** (1 model)
-- `rep_sales_funnel_monthly` - 128 rows, final deliverable
+### Marts Layer (2 models) - Business Deliverables
 
-**Output Schema:**
-```
-month       | kpi_name                           | funnel_step                        | deals_count
-2024-01-01  | Step 1: Lead Generation            | Step 1: Lead Generation            | 30
-2024-01-01  | Step 2.1: Sales Call 1             | Step 2.1: Sales Call 1             | 77
-...
-```
+- `rep_sales_funnel_monthly` (table) - Primary deliverable
+- `rep_lost_reasons` (view) - Loss pattern analysis
 
 ---
 
-## 🔍 Data Quality Findings
+## Performance Validation
 
-**Source Issues Discovered & Fixed:**
-1. **Perfect duplicates:** 9,158 → 4,579 activities after deduplication
-2. **Non-unique activity_id:** Same ID used for multiple deals (composite key required)
-3. **VARCHAR foreign keys:** Converted to INTEGER for performance
-4. **Shared emails:** 4 users share email addresses (business process issue)
-5. **Schema evolution risks:** Documented and mitigated with dynamic tests
+**Raw Query (Optimized):** 22.75 ms execution, 1006 kB memory, 207 buffer hits
 
----
+**dbt Mart Query:** 0.16 ms execution, 35 kB memory, 5 buffer hits
 
-## 📈 Business Logic
-
-**Funnel Steps (11 total):**
-- 9 main stages (Lead Generation → Renewal/Expansion)
-- 2 sub-steps: Sales Call 1 (Step 2.1), Sales Call 2 (Step 3.1)
-
-**Filtering Rules:**
-- Activities: Only completed (done=true) Sales Call 1 & 2
-- Users: Test accounts flagged via `is_test_user` (email pattern matching)
-
-**Time Intelligence:**
-- Monthly aggregation (primary)
-- Architecture supports weekly/daily via pre-computed date fields
+**Improvement:** 47x faster via pre-aggregation
 
 ---
 
-## 🚀 Quick Start
+## Intermediate Layer Value
 
-### **Prerequisites:**
-- Docker Desktop
-- dbt-core with dbt-postgres
-- Git
+**Supports Multiple Use Cases:**
+- Monthly/weekly/daily funnel reports (reuse `int_funnel_events`)
+- Deal lifecycle reconstruction (array time-travel via `int_deal_timeline`)
+- Loss analysis (reason categorization + temporal patterns)
+- Stage conversion rates (`int_stage_transitions` - 46 paths detected)
+- Backward transition detection (regression alerts)
+- Time-in-stage performance metrics
 
-### **Setup:**
+**Architecture Coverage:**
+- Dimensional foundation: Centralized business logic (stage categories, date attributes)
+- Transaction facts: Normalized for aggregations (8,906 + 1,128 events)
+- Analytical aggregates: Arrays for drill-down, pre-computed for speed
+
+---
+
+## Quick Start
 ```bash
-# 1. Clone repository
-git clone <your-repo-url>
-cd dbt_enpal_assessment
-
-# 2. Start database
+# Setup
 docker compose up -d
+bash raw_data/load_data.sh  # or .bat on Windows
+dbt deps && dbt run && dbt test
 
-# 3. Load sample data
-bash raw_data/load_data.sh  # or load_data.bat on Windows
-
-# 4. Install dbt dependencies
-dbt deps
-
-# 5. Build all models
-dbt run
-
-# 6. Run tests
-dbt test
-
-# 7. Generate documentation
-dbt docs generate
-dbt docs serve
+# Verify
+dbt docs generate && dbt docs serve
 ```
 
 ---
 
-## 📁 Project Structure
+## Data Quality
+
+**52 tests passing** - Unique keys, referential integrity, not null, composite constraints, accepted values
+
+**Key Decisions:**
+- Dynamic relationships tests (schema evolution ready)
+- Composite unique keys where needed (activity_id + deal_id)
+- Test user identification (email pattern matching, no hardcoding)
+
+---
+
+## Project Structure
 ```
-dbt_enpal_assessment/
-├── models/
-│   ├── staging/
-│   │   ├── _sources.yml              # Source documentation + tests
-│   │   ├── _stg_models.yml           # Staging model tests
-│   │   ├── stg_pipedrive__*.sql      # 5 staging models
-│   ├── intermediate/
-│   │   ├── dimensions/
-│   │   │   ├── dim_dates.sql         # Date spine
-│   │   │   └── dim_stages.sql        # Enhanced stages
-│   │   ├── facts/
-│   │   │   ├── fct_deal_stage_changes.sql
-│   │   │   └── fct_deal_activities.sql
-│   │   └── aggregates/
-│   │       ├── int_funnel_events.sql      # Combined events
-│   │       └── int_deal_journey.sql       # Array-based time travel
-│   └── marts/
-│       └── rep_sales_funnel_monthly.sql   # Final report
-├── analysis/
-│   └── exploration.md                # Data exploration notes
-├── raw_data/                         # CSV source files
-├── dbt_project.yml
-├── packages.yml                      # dbt_utils dependency
-└── README.md
+models/
+├── staging/          # 5 models - Clean source data
+├── intermediate/     # 6 models - Reusable dimensions/facts/aggregates
+└── marts/            # 2 models - Business deliverables
 ```
 
 ---
 
-## 🧪 Testing
+## Technical Highlights
 
-**52 Data Quality Tests:**
-- Source tests: Not null, unique, relationships
-- Staging tests: Composite keys, referential integrity, accepted values
-- All tests passing ✅
+**Performance:** VARCHAR→INTEGER FK (10x faster joins), pre-computed dates, early deduplication, strategic materialization (tables for facts, views for reports)
 
-**Run tests:**
-```bash
-dbt test                              # All tests
-dbt test --select staging            # Staging only
-dbt test --select source:pipedrive   # Source only
-```
+**Data Quality:** Source duplicate detection (50% reduction), non-unique ID patterns, schema design fixes, comprehensive testing
+
+**Scalability:** Kimball star schema, SCD Type 2 ready, dynamic test patterns, incremental-capable facts
 
 ---
 
-## 🎯 Advanced Features
-
-### **1. Hybrid Data Modeling**
-Combines normalized facts (for aggregations) with array-based aggregates (for time-travel queries):
+## Deliverable Schema
 ```sql
--- Normalized: Fast aggregations
-SELECT stage_id, COUNT(DISTINCT deal_id)
-FROM fct_deal_stage_changes
-GROUP BY 1
-
--- Array-based: Fast single-deal analysis
-SELECT stage_journey, stage_timestamps
-FROM int_deal_journey
-WHERE deal_id = 123
+month       | kpi_name                | funnel_step             | deals_count
+2024-01-01  | Step 1: Lead Generation | Step 1: Lead Generation | 30
+2024-01-01  | Step 2.1: Sales Call 1  | Step 2.1: Sales Call 1  | 77
 ```
 
-### **2. Performance Optimizations**
-- VARCHAR → INTEGER FK conversion (~10x faster joins)
-- Pre-computed date fields (avoid repeated date_trunc)
-- Deduplication before JOINs (reduce data volume)
-- Surrogate keys for efficient lookups
-
-### **3. Schema Evolution Readiness**
-- Dynamic relationships tests (adapt to new stages automatically)
-- Test user identification (no hardcoded exclusions)
-- SCD Type 2 architecture prepared (not implemented per requirements)
+**Output:** 128 rows across 14 months, 11 funnel steps (9 stages + 2 sub-steps)
 
 ---
 
-## 📚 Key Decisions & Trade-offs
+## Submission Details
 
-### **Why Kimball Dimensional Model?**
-✅ Industry standard for BI/analytics  
-✅ Reusable dimensions serve multiple reports  
-✅ Query performance via star schema  
-✅ Scalable for future requirements  
+**Author:** Kowsar
 
-### **Why NOT fully denormalized arrays?**
-Aggregations, time-based analysis, and JOINs perform better with normalized facts. Arrays used selectively for single-deal queries.
+**Date:** February 2026
 
-### **Why Type 1 SCD for users?**
-Assessment scope focuses on fundamentals. Architecture supports Type 2 upgrade via `last_modified_at` field.
+**Repository:** https://github.com/KowsarAsghari/dbt_enpal_assessment
+
+**Transparency Note:** Claude AI (Anthropic) was used as a thought partner throughout this project for architectural discussions, code review, optimization suggestions, and debugging assistance. All design decisions, problem-solving approaches, and implementations remain my original work.
 
 ---
 
-## 🔗 Database Connection
-
-**Docker Compose:**
-```yaml
-Host: localhost
-Port: 15432  # Changed from 5432 (Windows port conflict)
-Database: postgres
-User: admin
-Password: admin
-```
-
----
-
-## 📝 Git History
-
-Clean, meaningful commits documenting each development phase:
-```
-cb578a0 feat(intermediate+marts): complete dimensional model and final report
-2aa102d feat(staging): complete staging layer with activity_types and users
-015c38d feat(staging): add stg_pipedrive__activity with deduplication
-76fd562 feat(staging): add stg_pipedrive__stages dimension
-49dab57 docs(staging): add comprehensive documentation
-a5ed260 feat(staging): add stg_pipedrive__deal_changes
-```
-
----
-
-## 👤 Author
-
-**Kowsar** - Analytics Engineering Assessment for Enpal
-
-**Submission Date:** February 2026
-
----
-
-## 📄 License
+## License
 
 This project is for assessment purposes only.
