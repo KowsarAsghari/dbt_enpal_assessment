@@ -80,7 +80,11 @@ models:
 
   - name: stg_pipedrive__activity
     description: |
-      ...
+      Staging model for sales activities.
+      Fixes VARCHAR FK to INTEGER FK for performance.
+      Deduplicates perfect duplicates from source.
+      Grain: One row per activity
+      Rows: 4,579
     config:
       tags: ['staging', 'daily']
     tests:
@@ -90,7 +94,7 @@ models:
             - deal_id
     columns:
       - name: activity_id
-        description: "Activity identifier (NOT unique - same ID can link to multiple deals)"
+        description: "Activity identifier (NOT unique - same ID for multiple deals)"
         data_tests:
           - not_null
       - name: deal_id
@@ -100,7 +104,7 @@ models:
         data_tests:
           - not_null
       - name: activity_type_id
-        description: "Activity type (INTEGER FK)"
+        description: "Activity type (INTEGER FK - performance optimized)"
         data_tests:
           - not_null
       - name: activity_type_code
@@ -129,3 +133,60 @@ models:
       - name: activity_year
         data_tests:
           - not_null
+
+  - name: stg_pipedrive__activity_types
+    description: |
+      Staging model for activity type definitions.
+      Simple lookup table mapping codes to display names.
+      Grain: One row per activity type
+      Rows: 4
+    config:
+      tags: ['staging', 'dimension', 'static']
+    columns:
+      - name: activity_type_id
+        description: "Unique activity type identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: activity_type_code
+        description: "Activity type code (meeting, sc_2, follow_up, after_close_call)"
+        data_tests:
+          - unique
+          - not_null
+      - name: activity_type_name
+        description: "Display name"
+        data_tests:
+          - not_null
+      - name: is_active
+        description: "Whether type is currently active"
+
+  - name: stg_pipedrive__users
+    description: |
+      Staging model for sales team users.
+      Type 1 SCD with test user flagging.
+      Grain: One row per user
+      Rows: 1,787
+    config:
+      tags: ['staging', 'dimension', 'daily']
+    columns:
+      - name: user_id
+        description: "Unique user identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: user_name
+        description: "User full name"
+        data_tests:
+          - not_null
+      - name: user_email
+        description: "User email (NOT unique - some shared emails)"
+        data_tests:
+          - not_null
+      - name: last_modified_at
+        description: "Last modification timestamp"
+      - name: is_test_user
+        description: "Flag for test users (exclude with WHERE NOT is_test_user)"
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [true, false]
