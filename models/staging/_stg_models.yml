@@ -1,0 +1,77 @@
+version: 2
+
+models:
+  - name: stg_pipedrive__deal_changes
+    description: |
+      Staging model for deal stage change events.
+      
+      Filters deal_changes table for stage transitions only.
+      Transforms VARCHAR to proper types and adds date fields.
+      
+      Grain: One row per stage change per deal
+      Rows: 8,906 (from 15,406 total - 58% reduction)
+    
+    config:
+      tags: ['staging', 'daily']
+    
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - deal_id
+            - stage_change_timestamp
+            - stage_id
+    
+    columns:
+      - name: change_id
+        description: "Surrogate key generated from natural key composite"
+        data_tests:
+          - unique
+          - not_null
+      
+      - name: deal_id
+        description: "Deal identifier"
+        data_tests:
+          - not_null
+      
+      - name: stage_id
+        description: "Pipeline stage identifier (1-9)"
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+      
+      - name: stage_change_timestamp
+        description: "Exact timestamp of stage change"
+        data_tests:
+          - not_null
+      
+      - name: stage_change_date
+        description: "Date of stage change"
+        data_tests:
+          - not_null
+      
+      - name: stage_change_month
+        description: "First day of month (for monthly aggregations)"
+        data_tests:
+          - not_null
+      
+      - name: stage_change_week
+        description: "First day of week (for weekly trends)"
+        data_tests:
+          - not_null
+      
+      - name: stage_change_quarter
+        description: "First day of quarter"
+        data_tests:
+          - not_null
+      
+      - name: stage_change_year
+        description: "Year (integer)"
+        data_tests:
+          - not_null
+      
+      - name: _loaded_at
+        description: "Load timestamp (for debugging)"
+      
+      - name: _dbt_run_id
+        description: "dbt run identifier (for audit trail)"
