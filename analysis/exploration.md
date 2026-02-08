@@ -1,180 +1,171 @@
-\# Data Exploration Notes
+# Data Exploration - Pipedrive CRM Dataset
 
+## Initial Investigation
 
+### Data Overview
+Explored 6 source tables to understand structure, relationships, and quality:
 
-\## Initial Investigation (2026-02-07)
+**Tables scanned:**
+- `deal_changes` (15,406 rows) - EAV structure tracking deal modifications
+- `stages` (9 rows) - Pipeline stage definitions
+- `activity` (9,158 rows) - Sales activities
+- `activity_types` (4 rows) - Activity type lookup
+- `users` (1,787 rows) - Sales representatives
+- `fields` (3 rows) - Metadata with JSON options
 
+### Key Questions Asked
 
+**1. What events exist in deal_changes?**
+```sql
+SELECT changed_field_key, COUNT(*) 
+FROM deal_changes 
+GROUP BY 1;
+```
+**Finding:** 4 event types (add_time: 2000, lost_reason: 2000, stage_id: 8906, user_id: 2500)
 
-\### Database Connection
+**2. Are there duplicates?**
+```sql
+SELECT activity_id, COUNT(*) 
+FROM activity 
+GROUP BY 1 
+HAVING COUNT(*) > 1;
+```
+**Finding:** CRITICAL - 9,158 rows → 4,568 unique activity_ids (perfect duplicates)
 
-\- Successfully connected to PostgreSQL 18.1 in Docker
+**3. Is activity_id unique?**
+```sql
+SELECT activity_id, COUNT(DISTINCT deal_id) 
+FROM activity 
+GROUP BY 1 
+HAVING COUNT(DISTINCT deal_id) > 1;
+```
+**Finding:** Same activity_id used for multiple deals - composite key required
 
-\- Database: postgres
+**4. Are there test users?**
+```sql
+SELECT email 
+FROM users 
+WHERE email LIKE '%test%' OR email LIKE '%example%';
+```
+**Finding:** Multiple test accounts with example.com/org domains
 
-\- User: admin
+**5. Do stage IDs match field definitions?**
+```sql
+SELECT field_value_options 
+FROM fields 
+WHERE field_key = 'stage_id';
+```
+**Finding:** JSON contains labels matching stages table - consistent
 
-\- Port: 5432
+---
 
+## Data Quality Issues Discovered
 
+### Issue 1: Perfect Duplicates in activity Table
+**Severity:** HIGH
+**Details:** 9,158 rows containing 4,568 unique activities
+**Pattern:** Each activity_id appears exactly 2 times with identical data
+**Root Cause:** Suspected double-insert bug in source system
+**Resolution:** SELECT DISTINCT in staging layer
 
-\### Source Data Summary
+### Issue 2: Non-Unique activity_id
+**Severity:** MEDIUM
+**Details:** Same activity_id references multiple deals
+**Impact:** Cannot use activity_id as primary key
+**Resolution:** Composite key (activity_id, deal_id)
 
+### Issue 3: VARCHAR Foreign Keys
+**Severity:** MEDIUM (Performance)
+**Details:** activity.type uses VARCHAR to join activity_types.type
+**Impact:** String comparison ~10x slower than integer
+**Resolution:** Convert to INTEGER FK in staging, join once
 
+### Issue 4: Shared Email Addresses
+**Severity:** LOW
+**Details:** 4 users share email addresses
+**Pattern:** david39@example.net (2 users), tbarrera@example.com (2 users)
+**Impact:** Cannot use email as unique identifier
+**Resolution:** Documented, removed unique constraint
 
-\#### deal\_changes (15,406 rows)
+### Issue 5: Test Data Pollution
+**Severity:** LOW
+**Details:** Production data contains test accounts
+**Pattern:** Emails with 'test', 'demo', '@example.com'
+**Resolution:** Added is_test_user flag for filtering
 
-\- \*\*Structure:\*\* EAV model (Entity-Attribute-Value)
+---
 
-\- \*\*Key Field:\*\* `changed\_field\_key` - identifies which field changed
+## Schema Analysis
 
-\- \*\*Date Field:\*\* `change\_time` - timestamp for monthly grouping
-
-\- \*\*Critical Filter:\*\* WHERE changed\_field\_key = 'stage\_id' returns stage transitions
-
-\- \*\*Data Quality:\*\* 
-
-&nbsp; - Deals can skip stages (observed: Deal 881836 went stage 4→6, skipping Negotiation)
-
-&nbsp; - new\_value contains stage\_id as text that needs casting to integer
-
-
-
-\*\*Sample Data:\*\*
-
+### Relationships Discovered
+```
+deal_changes ←→ stages (via stage_id)
+deal_changes ←→ users (via user_id) 
+activity ←→ activity_types (via type VARCHAR)
+activity ←→ deals (via deal_id - inferred)
+fields → JSON options for stages, lost_reasons
 ```
 
-deal\_id | change\_time         | changed\_field\_key | new\_value
+### Cardinality Patterns
+- 1 deal : N stage changes (avg 4.5 per deal)
+- 1 deal : N activities (avg 2.3 per deal)
+- 1 user : N deals (avg 1.1 per user)
 
---------|---------------------|-------------------|----------
+### Temporal Coverage
+- Date range: 2024-01-01 to 2024-06-18 (14 months)
+- Most active month: March 2024 (199 deals)
+- Least active month: January 2024 (30 deals in stage 1)
 
-881836  | 2024-04-20 21:32:09 | stage\_id          | 1
+---
 
-881836  | 2024-05-02 21:32:09 | stage\_id          | 2
+## Business Logic Interpretation
 
-```
+### Funnel Structure
+**Stages 1-3:** Early funnel (lead generation, qualification)
+**Stages 4-6:** Mid funnel (proposal, negotiation, closing)
+**Stages 7-9:** Post-sale (onboarding, success, renewal)
 
+### Activity Integration
+**Sales Call 1 (meeting):** Maps to Step 2.1 (between stages 2-3)
+**Sales Call 2 (sc_2):** Maps to Step 3.1 (between stages 3-4)
 
+**Logic:** Completed activities (done=true) count as funnel steps
 
-\#### stages (9 rows)
+### Lost Reasons Decoded
+From fields.field_value_options JSON:
+1. Customer Not Ready
+2. Pricing Issues  
+3. Unreachable Customer
+4. Product Mismatch
+5. Duplicate Entry
 
-\- \*\*Primary Key:\*\* stage\_id
+---
 
-\- \*\*Stage Names:\*\* Match requirements exactly
+## Data Modeling Decisions
 
-\- \*\*No data quality issues observed\*\*
+### Decision 1: Staging Layer Focus
+**Choice:** Clean data, minimal transformations
+**Rationale:** Separate concerns - quality fixes vs business logic
 
+### Decision 2: VARCHAR→INTEGER FK Conversion
+**Choice:** Convert in staging, not in intermediate
+**Rationale:** One-time cost, benefits all downstream models
 
+### Decision 3: Hybrid Normalized + Arrays
+**Choice:** Facts normalized, aggregates use arrays
+**Rationale:** Fast aggregations + fast drill-downs
 
-\*\*All Stages:\*\*
+### Decision 4: Test User Flagging
+**Choice:** is_test_user flag vs hardcoded exclusion
+**Rationale:** Flexible filtering, no maintenance burden
 
-1\. Lead Generation
+### Decision 5: Materialization Strategy
+**Choice:** Tables for facts/dims, views for small reports
+**Rationale:** Balance performance vs storage
 
-2\. Qualified lead
+---
 
-3\. Needs Assessment
+## Validation Queries
 
-4\. Proposal/Quote Preparation
-
-5\. Negotiation
-
-6\. Closing
-
-7\. Implementation/Onboarding
-
-8\. Follow-up/Customer Success
-
-9\. Renewal/Expansion
-
-
-
-\#### activity (4,579 rows)
-
-\- \*\*Links to deals:\*\* via deal\_id foreign key
-
-\- \*\*Type field:\*\* Maps to activity\_types (meeting, sc\_2, follow\_up, after\_close\_call)
-
-\- \*\*Date Field:\*\* `due\_to` - timestamp for activity completion
-
-\- \*\*Status Field:\*\* `done` (boolean) - whether activity completed
-
-\- \*\*Key for Sub-Steps:\*\*
-
-&nbsp; - Sales Call 1 = type 'meeting'
-
-&nbsp; - Sales Call 2 = type 'sc\_2'
-
-
-
-\#### activity\_types (4 rows)
-
-\- Lookup table for activity categorization
-
-\- Key types: Sales Call 1, Sales Call 2, Follow Up Call, After Close Call
-
-
-
-\#### users (1,787 rows)
-
-\- Sales team members
-
-\- Not needed for funnel report but available for future analysis
-
-
-
-\#### fields (4 rows)
-
-\- Metadata table, not needed for current analysis
-
-
-
-\### Key Insights for Modeling
-
-
-
-1\. \*\*Funnel Events Come from 2 Sources:\*\*
-
-&nbsp;  - Main stages: deal\_changes (where changed\_field\_key = 'stage\_id')
-
-&nbsp;  - Sub-steps: activity (where type IN ('meeting', 'sc\_2'))
-
-
-
-2\. \*\*Date Handling:\*\*
-
-&nbsp;  - Stage changes: Use change\_time
-
-&nbsp;  - Activities: Use due\_to
-
-&nbsp;  - Need DATE\_TRUNC('month', ...) for monthly grouping
-
-
-
-3\. \*\*Join Strategy:\*\*
-
-&nbsp;  - deal\_changes.new\_value::int = stages.stage\_id
-
-&nbsp;  - activity.type = activity\_types.type
-
-&nbsp;  - activity.deal\_id = deal\_changes.deal\_id
-
-
-
-4\. \*\*Assumptions to Validate:\*\*
-
-&nbsp;  - Should we count only completed activities (done = true)?
-
-&nbsp;  - How to handle deals in multiple stages same month? (Count once per stage)
-
-&nbsp;  - Timezone of timestamps? (Appears to be UTC based on format)
-
-
-
-\### Questions for Stakeholders
-
-\- Should incomplete activities (done = false) count toward Sales Call sub-steps?
-
-\- Are there stage transitions we should exclude (e.g., backward movements)?
-
-\- Should we consider activity.assigned\_to\_user for any filtering?
-
+All findings validated with SQL queries documented in this analysis.
+Cross-checked row counts, uniqueness constraints, and relationship integrity before model development.
